@@ -2,10 +2,13 @@
   lib,
   stdenv,
   callPackage,
+  cursor-agent,
   vscode-generic,
   fetchurl,
   appimageTools,
   undmg,
+  symlinkJoin,
+  makeWrapper,
   commandLineArgs ? "",
   useVSCodeRipgrep ? stdenv.hostPlatform.isDarwin,
 }: let
@@ -22,77 +25,93 @@
   };
 
   source = sources.${hostPlatform.system};
-in
-  (callPackage vscode-generic rec {
-    inherit useVSCodeRipgrep;
-    commandLineArgs = finalCommandLineArgs;
 
-    version = appImageData.version;
-    pname = "cursor";
+  cursorIde =
+    (callPackage vscode-generic rec {
+      inherit useVSCodeRipgrep;
+      commandLineArgs = finalCommandLineArgs;
 
-    # You can find the current VSCode version in the About dialog:
-    # workbench.action.showAboutDialog (Help: About)
-    # TODO - Tyler should automate this
-    vscodeVersion = "1.99.3";
+      version = appImageData.version;
+      pname = "cursor";
 
-    executableName = "cursor";
-    longName = "Cursor";
-    shortName = "cursor";
-    libraryName = "cursor";
-    iconName = "cursor";
+      # You can find the current VSCode version in the About dialog:
+      # workbench.action.showAboutDialog (Help: About)
+      # TODO - Tyler should automate this
+      vscodeVersion = "1.99.3";
 
-    src =
-      if hostPlatform.isLinux
-      then
-        appimageTools.extract {
-          inherit pname version;
-          src = source;
-        }
-      else source;
+      executableName = "cursor";
+      longName = "Cursor";
+      shortName = "cursor";
+      libraryName = "cursor";
+      iconName = "cursor";
 
-    sourceRoot =
-      if hostPlatform.isLinux
-      then "${pname}-${version}-extracted/usr/share/cursor"
-      else "Cursor.app";
+      src =
+        if hostPlatform.isLinux
+        then
+          appimageTools.extract {
+            inherit pname version;
+            src = source;
+          }
+        else source;
 
-    tests = {};
+      sourceRoot =
+        if hostPlatform.isLinux
+        then "${pname}-${version}-extracted/usr/share/cursor"
+        else "Cursor.app";
 
-    updateScript = ./update.sh;
+      tests = {};
 
-    # Editing the `cursor` binary within the app bundle causes the bundle's signature
-    # to be invalidated, which prevents launching starting with macOS Ventura, because Cursor is notarized.
-    # See https://eclecticlight.co/2022/06/17/app-security-changes-coming-in-ventura/ for more information.
-    dontFixup = stdenv.hostPlatform.isDarwin;
+      updateScript = ./update.sh;
 
-    # Cursor has no wrapper script.
-    patchVSCodePath = false;
+      # Editing the `cursor` binary within the app bundle causes the bundle's signature
+      # to be invalidated, which prevents launching starting with macOS Ventura, because Cursor is notarized.
+      # See https://eclecticlight.co/2022/06/17/app-security-changes-coming-in-ventura/ for more information.
+      dontFixup = stdenv.hostPlatform.isDarwin;
 
-    meta = {
-      description = "AI-powered code editor built on vscode";
-      homepage = "https://cursor.com";
-      changelog = "https://cursor.com/changelog";
-      # license = lib.licenses.unfree;
-      sourceProvenance = with lib.sourceTypes; [binaryNativeCode];
-      maintainers = with lib.maintainers; [
-        aspauldingcode
-        prince213
-      ];
-      platforms =
-        [
-          "aarch64-linux"
-          "x86_64-linux"
-        ]
-        ++ lib.platforms.darwin;
-      mainProgram = "cursor";
-    };
-  }).overrideAttrs
-  (oldAttrs: {
-    nativeBuildInputs =
-      (oldAttrs.nativeBuildInputs or []) ++ lib.optionals hostPlatform.isDarwin [undmg];
+      # Cursor has no wrapper script.
+      patchVSCodePath = false;
 
-    passthru =
-      (oldAttrs.passthru or {})
-      // {
-        inherit sources;
+      meta = {
+        description = "AI-powered code editor built on vscode";
+        homepage = "https://cursor.com";
+        changelog = "https://cursor.com/changelog";
+        # license = lib.licenses.unfree;
+        sourceProvenance = with lib.sourceTypes; [binaryNativeCode];
+        maintainers = with lib.maintainers; [
+          aspauldingcode
+          prince213
+        ];
+        platforms =
+          [
+            "aarch64-linux"
+            "x86_64-linux"
+          ]
+          ++ lib.platforms.darwin;
+        mainProgram = "cursor";
       };
-  })
+    }).overrideAttrs
+    (oldAttrs: {
+      nativeBuildInputs = (oldAttrs.nativeBuildInputs or []) ++ lib.optionals hostPlatform.isDarwin [undmg];
+
+      # Add a runtime dependency
+      propagatedBuildInputs = [
+        cursor-agent
+      ];
+
+      passthru =
+        (oldAttrs.passthru or {})
+        // {
+          inherit sources;
+        };
+    });
+in
+  symlinkJoin {
+    name = "cursor-${appImageData.version}";
+    paths = [cursorIde];
+    nativeBuildInputs = [makeWrapper];
+    postBuild = ''
+      wrapProgram $out/bin/cursor \
+        --run 'touch ~/.cursor/skip-cursor-agent-download' \
+    '';
+    passthru = cursorIde.passthru;
+  }
