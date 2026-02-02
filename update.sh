@@ -1,27 +1,52 @@
-#! /usr/bin/env nix-shell
-#! nix-shell -i bash -p curl jq
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p curl jq coreutils nix _7zz
+# shellcheck shell=bash
+set -euo pipefail
 
-UPDATES_URL="https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=latest"
+cd -- "$(dirname "${BASH_SOURCE[0]}")"
 
-echo "Fetching updates from $UPDATES_URL"
+META=$(curl -fsSL "https://api2.cursor.sh/updates/api/download/stable/linux-x64/cursor")
+VERSION=$(jq -r '.version' <<< "$META")
+CURRENT=$(jq -r '.version' sources.json 2>/dev/null || echo "")
 
-RESPONSE=$(curl -sL $UPDATES_URL)
-echo "Response: $RESPONSE"
+[[ "$VERSION" == "$CURRENT" ]] && { echo "Already up to date ($VERSION)"; exit 0; }
 
-APPIMAGE_URL=$(echo "$RESPONSE" | jq -r '.downloadUrl')
-VERSION=$(echo "$RESPONSE" | jq -r '.version')
+echo "Updating from ${CURRENT:-none} to $VERSION"
 
-APPIMAGE_FILE="cursor.AppImage"
-JSON_FILE="appimage.json"
+SOURCES="{}"
+VSCODE=""
 
-# Download the AppImage
-curl -sL -o $APPIMAGE_FILE $APPIMAGE_URL
+for pair in \
+  x86_64-linux:linux-x64 \
+  aarch64-linux:linux-arm64 \
+  x86_64-darwin:darwin-x64 \
+  aarch64-darwin:darwin-arm64
+do
+  IFS=: read -r sys platform <<< "$pair"
+  echo "Fetching metadata for $sys ($platform)..."
+  meta=$(curl -fsSL "https://api2.cursor.sh/updates/api/download/stable/$platform/cursor")
+  version=$(jq -r '.version' <<< "$meta")
 
-# Calculate the SHA256 hash
-APPIMAGE_HASH=$(sha256sum $APPIMAGE_FILE | awk '{ print $1 }')
+  [[ "$version" != "$VERSION" ]] && { echo "Version mismatch: $sys has $version, expected $VERSION"; exit 1; }
 
-# Save the URL and hash to a JSON file
-echo "{\"appimage_url\": \"$APPIMAGE_URL\", \"sha256\": \"sha256:$APPIMAGE_HASH\", \"version\": \"$VERSION\"}" > $JSON_FILE
+  url=$(jq -r '.downloadUrl' <<< "$meta")
 
-# Cleanup
-rm $APPIMAGE_FILE
+  echo "Prefetching $sys..."
+  { read -r hash; read -r path; } < <(nix-prefetch-url --print-path "$url")
+
+  sri=$(nix-hash --type sha256 --to-sri "$hash")
+
+  if [[ "$sys" == "x86_64-linux" ]]; then
+    echo "Extracting vscodeVersion from $sys..."
+    VSCODE=$(7zz x -so "$path" "usr/share/cursor/resources/app/product.json" 2>/dev/null | jq -r '.vscodeVersion')
+    echo "Found vscodeVersion: $VSCODE"
+  fi
+
+  SOURCES=$(jq -n --argjson src "$SOURCES" --arg sys "$sys" --arg url "$url" --arg hash "$sri" \
+    '$src + {($sys): {url: $url, hash: $hash}}')
+done
+
+jq -n --arg v "$VERSION" --arg vs "$VSCODE" --argjson s "$SOURCES" \
+  '{version: $v, vscodeVersion: $vs, sources: $s}' > sources.json
+
+echo "Updated sources.json to version $VERSION (vscode $VSCODE)"

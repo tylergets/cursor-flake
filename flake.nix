@@ -1,26 +1,29 @@
 {
-  description = "A very basic flake";
+  description = "Cursor IDE - AI-powered code editor";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-
-    nix-ai-tools.url = "github:numtide/nix-ai-tools";
   };
 
   outputs = {
     self,
     nixpkgs,
-    nix-ai-tools,
-  }: {
-    packages = {
-      x86_64-linux = let
-        pkgs = nixpkgs.legacyPackages.x86_64-linux;
-      in {
-        default = pkgs.callPackage ./cursor.nix {
-          cursor-agent = nix-ai-tools.packages.${pkgs.system}.cursor-agent;
-          vscode-generic = import "${pkgs.path}/pkgs/applications/editors/vscode/generic.nix";
-        };
+  }: let
+    supportedSystems = [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ];
+    forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+  in {
+    packages = forAllSystems (system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+    in {
+      cursor = pkgs.callPackage ./cursor.nix {
+        buildVscode = pkgs.callPackage "${pkgs.path}/pkgs/applications/editors/vscode/generic.nix" {};
       };
-    };
+      default = self.packages.${system}.cursor;
+    });
   };
 }
